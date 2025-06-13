@@ -3,30 +3,33 @@ from pydantic import BaseModel
 import joblib
 import numpy as np
 import pandas as pd
-from collections import Counter
+
+from app.api.endpoints import router
+
+# Kürzel zu Ministerium (ohne Bundesland)
+MINISTRY_SHORTCUTS = {
+    "MW": "Ministerium für Wirtschaft",
+    "VM": "Ministerium für Verkehr",
+    "SM": "Ministerium für Soziales",
+    "BM": "Ministerium für Bildung",
+    "UM": "Ministerium für Umwelt",
+    "FM": "Ministerium der Finanzen",
+    "IM": "Ministerium des Innern",
+    "GM": "Ministerium für Gesundheit",
+    # ... ergänze nach Bedarf ...
+}
+
+def get_ministry_from_id(entity_id):
+    # Ausnahmefall für Bund
+    if entity_id == "BUND" or (isinstance(entity_id, str) and entity_id.startswith("BUND")):
+        return "Bundesministerium für Digitales und Verkehr"
+    if isinstance(entity_id, str) and "_" in entity_id:
+        shortcut = entity_id.split("_")[-1]
+        return MINISTRY_SHORTCUTS.get(shortcut, "Unbekanntes Ministerium")
+    return "Unbekanntes Ministerium"
 
 app = FastAPI()
-
-# Mapping from responsible_entity_id to state (Bundesland)
-ENTITY_ID_TO_STATE = {
-    "BUND_BUNDESMINISTERIUM_FÜR_DIGITALES_UND_VERKEHR": "Bund",
-    "LAND_01_BM": "Schleswig-Holstein",
-    "LAND_02_BM": "Hamburg",
-    "LAND_03_BM": "Niedersachsen",
-    "LAND_04_BM": "Bremen",
-    "LAND_05_BM": "Nordrhein-Westfalen",
-    "LAND_06_BM": "Hessen",
-    "LAND_07_BM": "Rheinland-Pfalz",
-    "LAND_08_BM": "Baden-Württemberg",
-    "LAND_09_BM": "Bayern",
-    "LAND_10_BM": "Saarland",
-    "LAND_11_BM": "Berlin",
-    "LAND_12_BM": "Brandenburg",
-    "LAND_13_BM": "Mecklenburg-Vorpommern",
-    "LAND_14_BM": "Sachsen",
-    "LAND_15_BM": "Sachsen-Anhalt",
-    "LAND_16_BM": "Thüringen",
-}
+app.include_router(router)
 
 class PredictionRequest(BaseModel):
     model: str
@@ -34,19 +37,6 @@ class PredictionRequest(BaseModel):
     district: str = None
     state: str = None
     category: str = None
-
-@app.get("/requests-number-state")
-def requests_number_state():
-    df = pd.read_csv("csv/data.csv")
-    df["state"] = df["responsible_entity_id"].map(lambda x: ENTITY_ID_TO_STATE.get(x, "Unknown") if isinstance(x, str) else "Unknown")
-    counts = dict(Counter(df["state"]))
-    return {"requests": counts}
-
-@app.get("/requests-per-state")
-def requests_per_state():
-    df = pd.read_csv("csv/data.csv")
-    counts = dict(Counter(df["state"]))
-    return {"requests": counts}
 
 @app.post("/predict")
 def predict(request: PredictionRequest):
@@ -58,7 +48,21 @@ def predict(request: PredictionRequest):
             vectorizer = joblib.load("app/model/model1/vectorizer.pkl")
             description_vector = vectorizer.transform([request.description])
             prediction = model.predict(description_vector)
-            return {"model": "model1", "prediction": prediction[0]}
+            pred_id = prediction[0]
+            ministry = get_ministry_from_id(pred_id)
+            if pred_id == "BUND" or (isinstance(pred_id, str) and pred_id.startswith("BUND")):
+                readable = f"Das {ministry} ist für deine Anfrage zuständig."
+                state = "kein bundesland"
+            else:
+                bundesland = request.state if request.state else ""
+                readable = f"Das {ministry} in {bundesland} ist für deine Anfrage zuständig."
+                state = bundesland
+            return {
+                "model": "model1",
+                "prediction": pred_id,
+                "responsible_entity_readable": readable,
+                "state": state
+            }
         elif request.model == "model2":
             if not all([request.district, request.state, request.category]):
                 raise HTTPException(status_code=400, detail="district, state, and category are required for model2")
@@ -68,7 +72,20 @@ def predict(request: PredictionRequest):
             pred_state_code = model_dict["State Code"].predict(features)[0]
             pred_department = model_dict["Department"].predict(features)[0]
             result = f"{pred_level}_{pred_state_code}_{pred_department}"
-            return {"model": "model2", "prediction": result}
+            ministry = get_ministry_from_id(result)
+            if result == "BUND" or (isinstance(result, str) and result.startswith("BUND")):
+                readable = f"Das {ministry} ist für deine Anfrage zuständig."
+                state = "kein bundesland"
+            else:
+                bundesland = request.state if request.state else ""
+                readable = f"Das {ministry} in {bundesland} ist für deine Anfrage zuständig."
+                state = bundesland
+            return {
+                "model": "model2",
+                "prediction": result,
+                "responsible_entity_readable": readable,
+                "state": state
+            }
         else:
             raise HTTPException(status_code=400, detail="Unknown model type")
     except Exception as e:
