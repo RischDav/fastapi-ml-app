@@ -1,0 +1,8 @@
+FastAPI
+uvicorn
+scikit-learn
+pandas
+seaborn
+matplotlib
+joblib
+python-multipart
